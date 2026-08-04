@@ -1,0 +1,71 @@
+
+element.style {
+    --bg-color: #090b0f;
+    --font-color: #c9d1d9;
+    --link-color: #58a6ff;
+    --main-color: #161b22;
+}
+.frame-root #root {
+    background-color: var(--bg-color) !important;
+    color: var(--font-color) !important;
+}
+body, .frame-root, .frame-content, #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: inherit;
+}
+div, span, applet, object, iframe, h1, h2, h3, h4, h5, h6, p, blockquote, pre, a, abbr, acronym, address, big, cite, code, del, dfn, em, img, ins, kbd, q, s, samp, small, strike, strong, sub, sup, tt, var, b, u, center, dl, dt, dd, ol, ul, li, fieldset, form, label, legend, table, caption, tbody, tfoot, thead, tr, th, td, menu, nav, output, ruby, section, summary, time, mark, audio, video {
+    -webkit-font-smoothing: antialiased;
+    vertical-align: baseline;
+    color: unset;
+    box-shadow: none;
+    float: inherit;
+    background: 0 0;
+    border: 0;
+    margin: 0;
+    padding: 0;
+}
+
+user agent stylesheet
+div {
+    display: block;
+    unicode-bidi: isolate;
+}
+html {
+    font-size: 1em;
+    position: relative;
+}
+html {
+    --pro-bg: #222;
+    --pro-text: #fff;
+    --premium-bg: linear-gradient(180deg, #ffce4f 0%, #f5c311 100%);
+    --premium-text: #222;
+    --selection: #fff2a8;
+    --markword: lightgreen;
+    --loading-line: rgba(0, 0, 0, .1);
+    --text-80: rgba(0, 0, 0, .8);
+    --hljs-meta: #0086b3;
+    --root-bg-1: #fff;
+    --root-bg-2: #f6f6f6;
+    --root-bg-3: #f3f3f3;
+    --root-bg-4: #fbdfc8;
+    --root-border-1: rgba(0, 0, 0, .1);
+    --root-border-4: rgba(0, 0, 0, .4);
+    --pre-hover: #fff2a8;
+    --poptrans-bg: #fff;
+    --mark-bg: #ffc;
+    --mark-content-bg: #ffffb5;
+    --mark-bolder: #e7e7e7;
+    --text-0: #000;
+    --text-4: #444;
+    --neutral-border: rgba(128, 128, 128, .25);
+    --neutral-border-hover: rgba(128, 128, 128, .4);
+    --neutral-border-subtle: rgba(128, 128, 128, .12);
+    --neutral-border-light: rgba(128, 128, 128, .2);
+    --neutral-bg-hover: rgba(128, 128, 128, .08);
+    --neutral-bg-active: rgba(128, 128, 128, .12);
+    --neutral-bg-subtle: rgba(128, 128, 128, .06);
+    --neutral-bg-muted: rgba(128, 128, 128, .1);
+}

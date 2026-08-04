@@ -1,0 +1,37 @@
+html.clearly-overflow,
+html.clean-reader-overflow,
+body.clearly-enabled,
+body.clean-reader-enabled {
+  overflow: hidden !important;
+}
+
+#clearly-root[data-clean-reader="true"],
+#clear-reader-root[data-clean-reader="true"] {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 2147483647 !important;
+  display: block !important;
+  pointer-events: auto !important;
+  color-scheme: light dark !important;
+}
+
+#clearly-root[data-clean-reader="true"][hidden],
+#clear-reader-root[data-clean-reader="true"][hidden] {
+  display: none !important;
+}
+
+@media print {
+  #clearly-root[data-clean-reader="true"],
+  #clear-reader-root[data-clean-reader="true"] {
+    display: none !important;
+  }
+
+  html.clearly-overflow,
+  html.clean-reader-overflow,
+  body.clearly-enabled,
+  body.clean-reader-enabled {
+    overflow: visible !important;
+  }
+}
