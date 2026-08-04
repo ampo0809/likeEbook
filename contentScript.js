@@ -22,6 +22,7 @@
     active: false,
     root: null,
     shadow: null,
+    currentArticle: null,
     settings: { ...DEFAULT_SETTINGS }
   };
 
@@ -566,6 +567,505 @@
       .replace(/"/g, "&quot;");
   }
 
+  function slugify(value, fallback = "article") {
+    const slug = normalizeText(value)
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    return slug || fallback;
+  }
+
+  function escapeXml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function uniqueId(base, used) {
+    let id = slugify(base, "section");
+    let index = 2;
+
+    while (used.has(id)) {
+      id = `${slugify(base, "section")}-${index}`;
+      index += 1;
+    }
+
+    used.add(id);
+    return id;
+  }
+
+  function prepareEpubContent(contentRoot) {
+    const clone = contentRoot.cloneNode(true);
+    const used = new Set();
+    const idMap = new Map();
+
+    clone.querySelectorAll("[id]").forEach((element) => {
+      const oldId = element.id;
+      const newId = uniqueId(oldId || element.textContent, used);
+      if (oldId) {
+        idMap.set(oldId, newId);
+      }
+      element.id = newId;
+    });
+
+    clone.querySelectorAll("h2, h3").forEach((heading) => {
+      if (!heading.id) {
+        heading.id = uniqueId(heading.textContent, used);
+      }
+    });
+
+    clone.querySelectorAll('a[href^="#"]').forEach((link) => {
+      const raw = link.getAttribute("href").slice(1);
+      let decoded = raw;
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch {
+        decoded = raw;
+      }
+
+      if (idMap.has(decoded)) {
+        link.setAttribute("href", `#${idMap.get(decoded)}`);
+      }
+    });
+
+    return clone;
+  }
+
+  function serializeXhtmlNode(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeXml(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const tag = node.tagName.toLowerCase();
+    const allowedTags = new Set([
+      "a",
+      "abbr",
+      "b",
+      "blockquote",
+      "br",
+      "caption",
+      "cite",
+      "code",
+      "dd",
+      "del",
+      "div",
+      "dl",
+      "dt",
+      "em",
+      "figcaption",
+      "figure",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "hr",
+      "i",
+      "img",
+      "li",
+      "ol",
+      "p",
+      "pre",
+      "s",
+      "section",
+      "small",
+      "span",
+      "strong",
+      "sub",
+      "sup",
+      "table",
+      "tbody",
+      "td",
+      "tfoot",
+      "th",
+      "thead",
+      "tr",
+      "u",
+      "ul"
+    ]);
+
+    if (tag === "picture") {
+      return Array.from(node.childNodes).map(serializeXhtmlNode).join("");
+    }
+
+    if (!allowedTags.has(tag)) {
+      return Array.from(node.childNodes).map(serializeXhtmlNode).join("");
+    }
+
+    const attributes = [];
+    const id = node.getAttribute("id");
+
+    if (id) {
+      attributes.push(`id="${escapeXml(id)}"`);
+    }
+
+    if (tag === "a") {
+      const href = node.getAttribute("href");
+      if (href) {
+        attributes.push(`href="${escapeXml(href)}"`);
+      }
+    } else if (tag === "img") {
+      const src = node.getAttribute("src");
+      if (!src) {
+        return "";
+      }
+
+      attributes.push(`src="${escapeXml(src)}"`);
+      attributes.push(`alt="${escapeXml(node.getAttribute("alt") || "")}"`);
+
+      ["title", "width", "height"].forEach((name) => {
+        const value = node.getAttribute(name);
+        if (value && /^[\w .,:;!?'"()/-]+$/.test(value)) {
+          attributes.push(`${name}="${escapeXml(value)}"`);
+        }
+      });
+    } else if (tag === "td" || tag === "th") {
+      ["colspan", "rowspan"].forEach((name) => {
+        const value = node.getAttribute(name);
+        if (value && /^\d+$/.test(value)) {
+          attributes.push(`${name}="${value}"`);
+        }
+      });
+    }
+
+    if (tag === "br" || tag === "hr" || tag === "img") {
+      return `<${tag}${attributes.length ? ` ${attributes.join(" ")}` : ""} />`;
+    }
+
+    const children = Array.from(node.childNodes).map(serializeXhtmlNode).join("");
+    return `<${tag}${attributes.length ? ` ${attributes.join(" ")}` : ""}>${children}</${tag}>`;
+  }
+
+  function serializeXhtmlChildren(node) {
+    return Array.from(node.childNodes).map(serializeXhtmlNode).join("");
+  }
+
+  function buildToc(contentRoot) {
+    const items = Array.from(contentRoot.querySelectorAll("h2, h3")).slice(0, 80);
+
+    if (!items.length) {
+      return '<li><a href="content.xhtml">Start</a></li>';
+    }
+
+    return items
+      .map((heading) => {
+        const id = heading.id ? `#${heading.id}` : "";
+        return `<li><a href="content.xhtml${escapeXml(id)}">${escapeXml(
+          normalizeText(heading.textContent)
+        )}</a></li>`;
+      })
+      .join("\n");
+  }
+
+  function textToUtf8(value) {
+    return new TextEncoder().encode(value);
+  }
+
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      let value = i;
+      for (let bit = 0; bit < 8; bit += 1) {
+        value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      }
+      table[i] = value >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function writeUint16(view, offset, value) {
+    view.setUint16(offset, value, true);
+  }
+
+  function writeUint32(view, offset, value) {
+    view.setUint32(offset, value, true);
+  }
+
+  function concatBytes(chunks, totalLength) {
+    const output = new Uint8Array(totalLength);
+    let offset = 0;
+    chunks.forEach((chunk) => {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    });
+    return output;
+  }
+
+  function createZip(files) {
+    const chunks = [];
+    const centralDirectory = [];
+    let offset = 0;
+
+    files.forEach((file) => {
+      const nameBytes = textToUtf8(file.name);
+      const dataBytes = file.data instanceof Uint8Array ? file.data : textToUtf8(file.data);
+      const crc = crc32(dataBytes);
+      const localHeader = new Uint8Array(30);
+      const localView = new DataView(localHeader.buffer);
+
+      writeUint32(localView, 0, 0x04034b50);
+      writeUint16(localView, 4, 20);
+      writeUint16(localView, 6, 0x0800);
+      writeUint16(localView, 8, 0);
+      writeUint16(localView, 10, 0);
+      writeUint16(localView, 12, 0);
+      writeUint32(localView, 14, crc);
+      writeUint32(localView, 18, dataBytes.length);
+      writeUint32(localView, 22, dataBytes.length);
+      writeUint16(localView, 26, nameBytes.length);
+      writeUint16(localView, 28, 0);
+
+      chunks.push(localHeader, nameBytes, dataBytes);
+      centralDirectory.push({ file, nameBytes, dataBytes, crc, offset });
+      offset += localHeader.length + nameBytes.length + dataBytes.length;
+    });
+
+    const centralOffset = offset;
+
+    centralDirectory.forEach((entry) => {
+      const header = new Uint8Array(46);
+      const view = new DataView(header.buffer);
+
+      writeUint32(view, 0, 0x02014b50);
+      writeUint16(view, 4, 20);
+      writeUint16(view, 6, 20);
+      writeUint16(view, 8, 0x0800);
+      writeUint16(view, 10, 0);
+      writeUint16(view, 12, 0);
+      writeUint16(view, 14, 0);
+      writeUint32(view, 16, entry.crc);
+      writeUint32(view, 20, entry.dataBytes.length);
+      writeUint32(view, 24, entry.dataBytes.length);
+      writeUint16(view, 28, entry.nameBytes.length);
+      writeUint16(view, 30, 0);
+      writeUint16(view, 32, 0);
+      writeUint16(view, 34, 0);
+      writeUint16(view, 36, 0);
+      writeUint32(view, 38, 0);
+      writeUint32(view, 42, entry.offset);
+
+      chunks.push(header, entry.nameBytes);
+      offset += header.length + entry.nameBytes.length;
+    });
+
+    const centralSize = offset - centralOffset;
+    const endRecord = new Uint8Array(22);
+    const endView = new DataView(endRecord.buffer);
+
+    writeUint32(endView, 0, 0x06054b50);
+    writeUint16(endView, 4, 0);
+    writeUint16(endView, 6, 0);
+    writeUint16(endView, 8, files.length);
+    writeUint16(endView, 10, files.length);
+    writeUint32(endView, 12, centralSize);
+    writeUint32(endView, 16, centralOffset);
+    writeUint16(endView, 20, 0);
+
+    chunks.push(endRecord);
+    offset += endRecord.length;
+
+    return concatBytes(chunks, offset);
+  }
+
+  function createEpub(article, contentRoot) {
+    const preparedContent = prepareEpubContent(contentRoot);
+    const title = article.title || document.title || "Article";
+    const creator = article.byline || article.site || "";
+    const language = (document.documentElement.lang || "en").split("-")[0] || "en";
+    const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    const identifier =
+      crypto && crypto.randomUUID
+        ? `urn:uuid:${crypto.randomUUID()}`
+        : `urn:clean-reader:${Date.now()}`;
+    const metaParts = [article.site, article.byline, article.published, location.href].filter(Boolean);
+    const body = serializeXhtmlChildren(preparedContent);
+    const toc = buildToc(preparedContent);
+    const creatorNode = creator ? `<dc:creator>${escapeXml(creator)}</dc:creator>` : "";
+    const dateNode = article.published ? `<dc:date>${escapeXml(article.published)}</dc:date>` : "";
+
+    const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/package.opf" media-type="application/oebps-package+xml" />
+  </rootfiles>
+</container>`;
+
+    const packageOpf = `<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">${escapeXml(identifier)}</dc:identifier>
+    <dc:title>${escapeXml(title)}</dc:title>
+    <dc:language>${escapeXml(language)}</dc:language>
+    ${creatorNode}
+    ${dateNode}
+    <dc:source>${escapeXml(location.href)}</dc:source>
+    <meta property="dcterms:modified">${escapeXml(modified)}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav" />
+    <item id="content" href="content.xhtml" media-type="application/xhtml+xml" />
+    <item id="style" href="style.css" media-type="text/css" />
+  </manifest>
+  <spine>
+    <itemref idref="content" />
+  </spine>
+</package>`;
+
+    const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${escapeXml(language)}" lang="${escapeXml(language)}">
+  <head>
+    <title>${escapeXml(title)}</title>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+  </head>
+  <body>
+    <nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops">
+      <h1>${escapeXml(title)}</h1>
+      <ol>
+        ${toc}
+      </ol>
+    </nav>
+  </body>
+</html>`;
+
+    const contentXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${escapeXml(language)}" lang="${escapeXml(language)}">
+  <head>
+    <title>${escapeXml(title)}</title>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+  </head>
+  <body>
+    <article>
+      <header>
+        <p class="meta">${escapeXml(metaParts.join(" / "))}</p>
+        <h1>${escapeXml(title)}</h1>
+      </header>
+      ${body}
+    </article>
+  </body>
+</html>`;
+
+    const bookCss = `body {
+  color: #1f2933;
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.55;
+  margin: 6%;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: sans-serif;
+  line-height: 1.2;
+}
+
+a {
+  color: #0b65c2;
+}
+
+blockquote {
+  border-left: 0.25em solid #9aa6b2;
+  margin-left: 0;
+  padding-left: 1em;
+}
+
+img {
+  display: block;
+  height: auto;
+  margin: 1em auto;
+  max-width: 100%;
+}
+
+pre, code {
+  font-family: monospace;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+td, th {
+  border: 1px solid #cbd5e1;
+  padding: 0.35em 0.5em;
+}
+
+.meta {
+  color: #64748b;
+  font-family: sans-serif;
+  font-size: 0.85em;
+}`;
+
+    const zipBytes = createZip([
+      { name: "mimetype", data: "application/epub+zip" },
+      { name: "META-INF/container.xml", data: containerXml },
+      { name: "OEBPS/package.opf", data: packageOpf },
+      { name: "OEBPS/nav.xhtml", data: navXhtml },
+      { name: "OEBPS/content.xhtml", data: contentXhtml },
+      { name: "OEBPS/style.css", data: bookCss }
+    ]);
+
+    return {
+      blob: new Blob([zipBytes], { type: "application/epub+zip" }),
+      filename: `${slugify(title)}.epub`
+    };
+  }
+
+  function buildCurrentEpub() {
+    const contentRoot = state.shadow && state.shadow.querySelector(".reader-content");
+
+    if (!state.currentArticle || !contentRoot) {
+      const article = extractArticle();
+      const wrapper = document.createElement("div");
+      wrapper.appendChild(article.content.cloneNode(true));
+      return createEpub(article, wrapper);
+    }
+
+    return createEpub(state.currentArticle, contentRoot);
+  }
+
+  function downloadEpub(button) {
+    const { blob, filename } = buildCurrentEpub();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+    link.rel = "noopener";
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+    if (button) {
+      const previous = button.textContent;
+      button.textContent = "OK";
+      window.setTimeout(() => {
+        button.textContent = previous;
+      }, 900);
+    }
+
+    return { filename, size: blob.size, type: blob.type };
+  }
+
   function loadSettings() {
     return new Promise((resolve) => {
       const fallback = () => {
@@ -692,6 +1192,14 @@
 
   function render(article) {
     buildRoot();
+    state.currentArticle = {
+      title: article.title,
+      byline: article.byline,
+      published: article.published,
+      site: article.site,
+      wordCount: article.wordCount,
+      readTime: article.readTime
+    };
 
     const meta = [article.site, article.byline, article.published, `${article.readTime} min read`]
       .filter(Boolean)
@@ -708,6 +1216,7 @@
           <button type="button" data-action="theme" title="Change theme" aria-label="Change theme">Aa</button>
           <button type="button" data-action="width" title="Change width" aria-label="Change width">&lt;&gt;</button>
           <button type="button" data-action="typeface" title="Toggle serif" aria-label="Toggle serif">S</button>
+          <button type="button" data-action="download-epub" title="Download EPUB" aria-label="Download EPUB">EPUB</button>
         </div>
         <main class="reader-scroll" tabindex="-1">
           <article class="reader-article">
@@ -744,6 +1253,8 @@
       cycleWidth();
     } else if (action === "typeface") {
       toggleTypeface();
+    } else if (action === "download-epub") {
+      downloadEpub(event.currentTarget);
     }
   }
 
@@ -787,6 +1298,7 @@
     state.active = false;
     state.root = null;
     state.shadow = null;
+    state.currentArticle = null;
   }
 
   function toggleReader() {
@@ -907,6 +1419,10 @@
       .reader-toolbar button:focus-visible {
         background: var(--button-bg-hover);
         outline: 2px solid transparent;
+      }
+
+      .reader-toolbar [data-action="download-epub"] {
+        font-size: 10px;
       }
 
       .reader-scroll {
@@ -1132,6 +1648,8 @@
   window[API_KEY] = {
     toggle: toggleReader,
     open: openReader,
-    close: closeReader
+    close: closeReader,
+    downloadEpub,
+    createEpub: buildCurrentEpub
   };
 })();
