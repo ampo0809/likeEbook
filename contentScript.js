@@ -410,13 +410,54 @@
     }
   }
 
-  function normalizeHeadingAnchors(candidate) {
+  function normalizeFragmentAnchors(candidate) {
     candidate.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((heading) => {
-      const anchor = heading.querySelector("a[id]");
-      if (anchor && !heading.id) {
-        heading.id = anchor.id;
+      const anchor = heading.querySelector("a[id], a[name]");
+      const targetId = anchor && getAnchorTargetId(anchor);
+      if (targetId && !heading.id) {
+        heading.id = targetId;
       }
     });
+
+    candidate.querySelectorAll("a[name]").forEach((anchor) => {
+      const targetId = getAnchorTargetId(anchor);
+      if (targetId && !anchor.id) {
+        anchor.id = targetId;
+      }
+    });
+  }
+
+  function getAnchorTargetId(anchor) {
+    return (anchor.getAttribute("id") || anchor.getAttribute("name") || "").trim();
+  }
+
+  function decodeHashTarget(value) {
+    const raw = String(value || "").replace(/^#/, "");
+    if (!raw) {
+      return "";
+    }
+
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
+  function findHashTarget(root, hash) {
+    const id = decodeHashTarget(hash);
+    if (!id || !root) {
+      return null;
+    }
+
+    if (typeof root.getElementById === "function") {
+      const target = root.getElementById(id);
+      if (target) {
+        return target;
+      }
+    }
+
+    return Array.from(root.querySelectorAll("[id]")).find((element) => element.id === id) || null;
   }
 
   function cleanAttributes(candidate) {
@@ -425,7 +466,19 @@
 
       if (tag === "a") {
         const href = absolutizeUrl(element.getAttribute("href"));
-        if (!href) {
+        const anchorTargetId = getAnchorTargetId(element);
+        const heading = element.closest("h1, h2, h3, h4, h5, h6");
+
+        if (!href && heading && heading.id && heading.id === anchorTargetId) {
+          unwrap(element);
+          return;
+        }
+
+        if (!href && anchorTargetId && !element.id) {
+          element.id = anchorTargetId;
+        }
+
+        if (!href && !getAnchorTargetId(element)) {
           unwrap(element);
           return;
         }
@@ -435,10 +488,10 @@
         const name = attr.name.toLowerCase();
         const value = attr.value;
         const allowed =
+          (name === "id" && value.trim()) ||
           (tag === "a" && name === "href") ||
           (tag === "img" && ["src", "srcset", "alt", "title", "width", "height"].includes(name)) ||
           (["td", "th"].includes(tag) && ["colspan", "rowspan"].includes(name)) ||
-          (/^h[1-6]$/.test(tag) && name === "id") ||
           (tag === "code" && name === "class" && /^language-/.test(value));
 
         if (!allowed) {
@@ -448,8 +501,12 @@
 
       if (tag === "a") {
         const href = absolutizeUrl(element.getAttribute("href"));
-        element.setAttribute("href", href);
-        if (!href.startsWith("#")) {
+        if (href) {
+          element.setAttribute("href", href);
+        } else {
+          element.removeAttribute("href");
+        }
+        if (href && !href.startsWith("#")) {
           element.setAttribute("target", "_blank");
           element.setAttribute("rel", "noopener noreferrer");
         }
@@ -494,7 +551,8 @@
 
       const text = normalizeText(element.textContent);
       const hasMedia = element.querySelector("img, picture, table, pre, code, blockquote");
-      if (!text && !hasMedia) {
+      const isAnchorTarget = element.id && (tag === "a" || /^h[1-6]$/.test(tag));
+      if (!text && !hasMedia && !isAnchorTarget) {
         element.remove();
       }
     });
@@ -522,7 +580,7 @@
   function sanitizeCandidate(candidate, title) {
     candidate = candidate.cloneNode(true);
     pruneUnwanted(candidate);
-    normalizeHeadingAnchors(candidate);
+    normalizeFragmentAnchors(candidate);
     removeDuplicateTitle(candidate, title);
     cleanAttributes(candidate);
     removeEmptyBlocks(candidate);
@@ -608,7 +666,9 @@
       const oldId = element.id;
       const newId = uniqueId(oldId || element.textContent, used);
       if (oldId) {
-        idMap.set(oldId, newId);
+        if (!idMap.has(oldId)) {
+          idMap.set(oldId, newId);
+        }
       }
       element.id = newId;
     });
@@ -620,13 +680,7 @@
     });
 
     clone.querySelectorAll('a[href^="#"]').forEach((link) => {
-      const raw = link.getAttribute("href").slice(1);
-      let decoded = raw;
-      try {
-        decoded = decodeURIComponent(raw);
-      } catch {
-        decoded = raw;
-      }
+      const decoded = decodeHashTarget(link.getAttribute("href"));
 
       if (idMap.has(decoded)) {
         link.setAttribute("href", `#${idMap.get(decoded)}`);
@@ -980,6 +1034,11 @@ a {
   color: #0b65c2;
 }
 
+a:not([href]) {
+  color: inherit;
+  text-decoration: none;
+}
+
 blockquote {
   border-left: 0.25em solid #9aa6b2;
   margin-left: 0;
@@ -1064,6 +1123,47 @@ td, th {
     }
 
     return { filename, size: blob.size, type: blob.type };
+  }
+
+  function scrollReaderToHash(hash, behavior = "smooth") {
+    if (!state.shadow) {
+      return false;
+    }
+
+    const scrollRoot = state.shadow.querySelector(".reader-scroll");
+    const target = findHashTarget(state.shadow, hash);
+    if (!scrollRoot || !target) {
+      return false;
+    }
+
+    const targetRect = target.getBoundingClientRect();
+    const scrollRect = scrollRoot.getBoundingClientRect();
+    scrollRoot.scrollTo({
+      top: scrollRoot.scrollTop + targetRect.top - scrollRect.top - 16,
+      behavior
+    });
+    return true;
+  }
+
+  function handleArticleClick(event) {
+    const target =
+      event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+    const link = target && target.closest('a[href^="#"]');
+    if (!link) {
+      return;
+    }
+
+    const hash = link.getAttribute("href");
+    if (!scrollReaderToHash(hash)) {
+      return;
+    }
+
+    event.preventDefault();
+    try {
+      history.pushState(null, "", hash);
+    } catch {
+      location.hash = hash;
+    }
   }
 
   function loadSettings() {
@@ -1234,9 +1334,15 @@ td, th {
     state.shadow.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", handleAction);
     });
+    state.shadow.querySelector(".reader-article").addEventListener("click", handleArticleClick);
 
     applySettings();
     state.shadow.querySelector(".reader-scroll").focus({ preventScroll: true });
+    if (location.hash) {
+      window.requestAnimationFrame(() => {
+        scrollReaderToHash(location.hash, "auto");
+      });
+    }
   }
 
   function handleAction(event) {
@@ -1528,6 +1634,11 @@ td, th {
         text-decoration: underline;
         text-decoration-thickness: 0.08em;
         text-underline-offset: 0.18em;
+      }
+
+      .reader-content a:not([href]) {
+        color: inherit;
+        text-decoration: none;
       }
 
       .reader-content ul,
