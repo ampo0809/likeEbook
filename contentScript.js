@@ -2,10 +2,8 @@
   const API_KEY = "__cleanArticleReader";
   const MESSAGE_TYPE = "clean-reader:toggle";
   const SETTINGS_KEY = "cleanArticleReaderSettings";
-  const PAGE_CLASSES = {
-    html: ["clearly-overflow", "clean-reader-overflow"],
-    body: ["clearly-enabled", "clean-reader-enabled"]
-  };
+  const PAGE_ACTIVE_ATTRIBUTE = "data-clean-article-reader-active";
+  const ROOT_ATTRIBUTE = "data-clean-reader";
   const DEFAULT_SETTINGS = {
     theme: "dark",
     fontSize: 20,
@@ -1252,26 +1250,28 @@ td, th {
   }
 
   function ensureShellRoots() {
-    if (!document.getElementById("clearly-skim-root")) {
-      const skimRoot = document.createElement("div");
-      skimRoot.id = "clearly-skim-root";
-      document.body.appendChild(skimRoot);
-    }
+    [
+      ["clearly-skim-root", "div"],
+      ["clearly-skim-hint-root", "div"]
+    ].forEach(([id, tag]) => {
+      const existing = document.getElementById(id);
+      if (existing) {
+        return;
+      }
 
-    if (!document.getElementById("clearly-skim-hint-root")) {
-      const hintRoot = document.createElement("div");
-      hintRoot.id = "clearly-skim-hint-root";
-      document.body.appendChild(hintRoot);
-    }
+      const root = document.createElement(tag);
+      root.id = id;
+      root.setAttribute(ROOT_ATTRIBUTE, "true");
+      document.body.appendChild(root);
+    });
   }
 
   function buildRoot() {
     ensureShellRoots();
 
-    let root = document.getElementById("clearly-root");
-    if (root && root.dataset.cleanReader !== "true") {
-      root = document.getElementById("clear-reader-root");
-    }
+    let root = document.querySelector(
+      `#clearly-root[${ROOT_ATTRIBUTE}="true"], #clear-reader-root[${ROOT_ATTRIBUTE}="true"]`
+    );
 
     if (!root) {
       root = document.createElement("div");
@@ -1279,7 +1279,7 @@ td, th {
       document.body.appendChild(root);
     }
 
-    root.dataset.cleanReader = "true";
+    root.setAttribute(ROOT_ATTRIBUTE, "true");
     root.setAttribute("role", "dialog");
     root.setAttribute("aria-modal", "true");
     root.setAttribute("aria-label", "Reader view");
@@ -1372,8 +1372,8 @@ td, th {
     state.settings = await loadSettings();
     const article = extractArticle();
 
-    PAGE_CLASSES.html.forEach((name) => document.documentElement.classList.add(name));
-    PAGE_CLASSES.body.forEach((name) => document.body.classList.add(name));
+    document.documentElement.setAttribute(PAGE_ACTIVE_ATTRIBUTE, "true");
+    document.body.setAttribute(PAGE_ACTIVE_ATTRIBUTE, "true");
     render(article);
     document.addEventListener("keydown", handleKeydown, true);
     state.active = true;
@@ -1385,8 +1385,8 @@ td, th {
     }
 
     document.removeEventListener("keydown", handleKeydown, true);
-    PAGE_CLASSES.html.forEach((name) => document.documentElement.classList.remove(name));
-    PAGE_CLASSES.body.forEach((name) => document.body.classList.remove(name));
+    document.documentElement.removeAttribute(PAGE_ACTIVE_ATTRIBUTE);
+    document.body.removeAttribute(PAGE_ACTIVE_ATTRIBUTE);
 
     if (state.root) {
       state.root.remove();
@@ -1394,10 +1394,10 @@ td, th {
 
     const skimRoot = document.getElementById("clearly-skim-root");
     const hintRoot = document.getElementById("clearly-skim-hint-root");
-    if (skimRoot && !skimRoot.childElementCount) {
+    if (skimRoot && skimRoot.dataset.cleanReader === "true" && !skimRoot.childElementCount) {
       skimRoot.remove();
     }
-    if (hintRoot && !hintRoot.childElementCount) {
+    if (hintRoot && hintRoot.dataset.cleanReader === "true" && !hintRoot.childElementCount) {
       hintRoot.remove();
     }
 
@@ -1750,8 +1750,9 @@ td, th {
     `;
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message && message.type === MESSAGE_TYPE) {
+      sendResponse({ ok: true });
       toggleReader();
     }
   });

@@ -1,12 +1,19 @@
 const TOGGLE_MESSAGE = { type: "clean-reader:toggle" };
 
+function isMissingReceiver(error) {
+  return /receiving end does not exist|could not establish connection/i.test(
+    (error && error.message) || ""
+  );
+}
+
 chrome.action.onClicked.addListener((tab) => {
   if (!tab.id || !tab.url || !/^(https?|file):/.test(tab.url)) {
     return;
   }
 
   chrome.tabs.sendMessage(tab.id, TOGGLE_MESSAGE, () => {
-    if (!chrome.runtime.lastError) {
+    const error = chrome.runtime.lastError;
+    if (!error || !isMissingReceiver(error)) {
       return;
     }
 

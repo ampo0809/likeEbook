@@ -1,7 +1,5 @@
-html.clearly-overflow,
-html.clean-reader-overflow,
-body.clearly-enabled,
-body.clean-reader-enabled {
+html[data-clean-article-reader-active="true"],
+body[data-clean-article-reader-active="true"] {
   overflow: hidden !important;
 }
 
@@ -28,10 +26,8 @@ body.clean-reader-enabled {
     display: none !important;
   }
 
-  html.clearly-overflow,
-  html.clean-reader-overflow,
-  body.clearly-enabled,
-  body.clean-reader-enabled {
+  html[data-clean-article-reader-active="true"],
+  body[data-clean-article-reader-active="true"] {
     overflow: visible !important;
   }
 }
