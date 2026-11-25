@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Clean Article Reader",
+  "name": "Like Ebook",
   "description": "Turns article pages into a focused Mercury-style reader view.",
   "version": "0.1.0",
   "action": {

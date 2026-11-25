@@ -1,19 +1,27 @@
-# Clean Article Reader
+# Like Ebook
 
-Chrome MV3 extension that turns noisy article pages into a focused reader view.
+Like Ebook is a Chrome extension that gives web articles and short stories a clean, book-like layout. Adjust the text size and choose a light, dark, or sepia theme.
 
-## Load
+## Before and after
 
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Load unpacked extension from this directory.
-4. Open an article page and click the extension icon. `Alt+R` also toggles it.
+**Before · The original website**
 
-## Behavior
+![The Shawl on the original website, with menus and bookshelf backgrounds](screenshots/before.png)
 
-- Extracts the most article-like area from `main`, `article`, `section`, and content-heavy `div` elements.
-- Removes scripts, nav, headers, footers, forms, cookie banners, related cards, social/share blocks, and other low-value wrappers.
-- Preserves headings, paragraphs, links, lists, quotes, images, code blocks, and tables.
-- Adds a Mercury-style isolated overlay with dark/light/sepia themes, font size, width, and serif controls.
-- Adds an `EPUB` toolbar button that downloads the current reader article as an `.epub` file.
-- EPUB exports use no page background and leave the main text font and color to the ebook reader; headings, metadata, and code retain basic styling.
+**After · The same story in Like Ebook**
+
+![The Shawl in Like Ebook’s dark reading view](screenshots/after.png)
+
+## Download and install in Chrome
+
+1. [Download Like Ebook (ZIP)](https://github.com/ampo0809/likeEbook/archive/refs/heads/master.zip).
+2. Unzip the download. On a Mac, double-click the ZIP file. On Windows, right-click it and choose **Extract All**.
+3. On your computer, type `chrome://extensions` into Chrome’s address bar and press Enter.
+4. Turn on **Developer mode** in the top-right corner.
+5. Click **Load unpacked** and select the **likeEbook-master** folder.
+
+Open an article, click the puzzle piece icon next to Chrome’s address bar, then click **Like Ebook** to open the reading view.
+
+## Download as EPUB
+
+With the reading view open, click **EPUB** in the toolbar. Open the downloaded file in your ebook app or transfer it to an EPUB-compatible e-reader to read offline.
