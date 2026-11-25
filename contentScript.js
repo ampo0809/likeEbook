@@ -1016,9 +1016,11 @@
   </body>
 </html>`;
 
-    const bookCss = `body {
-  color: #1f2933;
-  font-family: Georgia, "Times New Roman", serif;
+    const bookCss = `html, body {
+  background: none;
+}
+
+body {
   line-height: 1.55;
   margin: 6%;
 }

@@ -16,3 +16,4 @@ Chrome MV3 extension that turns noisy article pages into a focused reader view.
 - Preserves headings, paragraphs, links, lists, quotes, images, code blocks, and tables.
 - Adds a Mercury-style isolated overlay with dark/light/sepia themes, font size, width, and serif controls.
 - Adds an `EPUB` toolbar button that downloads the current reader article as an `.epub` file.
+- EPUB exports use no page background and leave the main text font and color to the ebook reader; headings, metadata, and code retain basic styling.
