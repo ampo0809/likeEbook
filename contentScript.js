@@ -16,6 +16,9 @@
     return;
   }
 
+  const { readerCss, epubCss } = window.__cleanArticleReaderStyles;
+  delete window.__cleanArticleReaderStyles;
+
   const state = {
     active: false,
     root: null,
@@ -66,6 +69,10 @@
     /ad-|ads|advert|banner|breadcrumb|browser-warning|comment|community|consent|cookie|dialog|feedback|form|ie11-notification|latest-news|masthead|menu|modal|nav|newsletter|outbrain|overlay|pager|pagination|popup|promo|recaptcha|recommend|related|share|shopping|sidebar|sign-post|social|sponsor|subscribe|toolbar|unsupported-browser|utility|widget/i;
   const JUNK_HEADING_RE =
     /^(related|recommended|more from|more on|read next|you might also|latest|popular|share|was this page helpful|feedback|subscribe|newsletter)\b/i;
+  const PARAGRAPH_DIV_SELECTOR =
+    '[role="paragraph"], [class~="para" i], [class~="storypara" i], [class*="paragraph" i]';
+  const INLINE_TEXT_TAGS =
+    "a, abbr, b, bdi, bdo, br, cite, code, data, del, dfn, em, i, ins, kbd, mark, q, rp, rt, ruby, s, samp, small, span, strong, sub, sup, time, u, var, wbr";
 
   function normalizeText(value) {
     return (value || "").replace(/\s+/g, " ").trim();
@@ -237,6 +244,35 @@
       current = current.parentElement;
     }
     return current;
+  }
+
+  function normalizeDivParagraphs(root) {
+    const textDivs = new Map();
+    root.querySelectorAll("div").forEach((div) => {
+      if (!div.querySelector(`:not(${INLINE_TEXT_TAGS})`)) {
+        const text = normalizeText(div.textContent);
+        if (text) textDivs.set(div, text);
+      }
+    });
+
+    // Adjacent substantial text blocks also signal paragraphs on pages without semantic markup.
+    const proseDivs = new Set(
+      Array.from(textDivs)
+        .filter(([, text]) => text.length >= 80 && /[.!?…。！？]/.test(text))
+        .map(([div]) => div)
+    );
+    const paragraphs = Array.from(textDivs.keys()).filter((div) =>
+      div.matches(PARAGRAPH_DIV_SELECTOR) ||
+      (proseDivs.has(div) &&
+        (proseDivs.has(div.previousElementSibling) || proseDivs.has(div.nextElementSibling)))
+    );
+
+    paragraphs.forEach((div) => {
+      const paragraph = document.createElement("p");
+      Array.from(div.attributes).forEach(({ name, value }) => paragraph.setAttribute(name, value));
+      paragraph.append(...div.childNodes);
+      div.replaceWith(paragraph);
+    });
   }
 
   function scoreCandidate(element) {
@@ -558,18 +594,16 @@
 
   function simplifyWrappers(candidate) {
     candidate.querySelectorAll("div, section").forEach((element) => {
-      const text = normalizeText(element.textContent);
       const media = element.querySelector("img, picture, table, pre, blockquote");
-      const blockChildren = Array.from(element.children).filter((child) =>
-        /^(p|h[1-6]|ul|ol|blockquote|pre|figure|table|img)$/i.test(child.tagName)
-      );
+      const wrapsBlocks = Array.from(element.childNodes).every((child) => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          return !normalizeText(child.textContent);
+        }
+        return child.nodeType !== Node.ELEMENT_NODE ||
+          /^(p|h[1-6]|ul|ol|blockquote|pre|figure|table|img)$/i.test(child.tagName);
+      });
 
-      if (text.length < 80 && !media) {
-        unwrap(element);
-        return;
-      }
-
-      if (blockChildren.length === element.children.length && !media) {
+      if (wrapsBlocks && !media) {
         unwrap(element);
       }
     });
@@ -595,6 +629,7 @@
   function extractArticle() {
     const bodyClone = document.body.cloneNode(true);
     pruneUnwanted(bodyClone);
+    normalizeDivParagraphs(bodyClone);
     const candidate = pickMainCandidate(bodyClone);
     const title = getArticleTitle(candidate);
     const byline = getByline(candidate);
@@ -1016,69 +1051,13 @@
   </body>
 </html>`;
 
-    const bookCss = `html, body {
-  background: none;
-}
-
-body {
-  line-height: 1.55;
-  margin: 6%;
-}
-
-h1, h2, h3, h4, h5, h6 {
-  font-family: sans-serif;
-  line-height: 1.2;
-}
-
-a {
-  color: #0b65c2;
-}
-
-a:not([href]) {
-  color: inherit;
-  text-decoration: none;
-}
-
-blockquote {
-  border-left: 0.25em solid #9aa6b2;
-  margin-left: 0;
-  padding-left: 1em;
-}
-
-img {
-  display: block;
-  height: auto;
-  margin: 1em auto;
-  max-width: 100%;
-}
-
-pre, code {
-  font-family: monospace;
-}
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-td, th {
-  border: 1px solid #cbd5e1;
-  padding: 0.35em 0.5em;
-}
-
-.meta {
-  color: #64748b;
-  font-family: sans-serif;
-  font-size: 0.85em;
-}`;
-
     const zipBytes = createZip([
       { name: "mimetype", data: "application/epub+zip" },
       { name: "META-INF/container.xml", data: containerXml },
       { name: "OEBPS/package.opf", data: packageOpf },
       { name: "OEBPS/nav.xhtml", data: navXhtml },
       { name: "OEBPS/content.xhtml", data: contentXhtml },
-      { name: "OEBPS/style.css", data: bookCss }
+      { name: "OEBPS/style.css", data: epubCss }
     ]);
 
     return {
@@ -1309,7 +1288,6 @@ td, th {
       .join("<span></span>");
 
     state.shadow.innerHTML = `
-      <style>${getShadowStyles()}</style>
       <div id="clearly-container" class="reader-shell" data-theme="${escapeHtml(state.settings.theme)}">
         <div class="reader-toolbar" aria-label="Reader controls">
           <button type="button" data-action="close" title="Close reader" aria-label="Close reader">X</button>
@@ -1332,6 +1310,9 @@ td, th {
       </div>
     `;
 
+    const style = document.createElement("style");
+    style.textContent = readerCss;
+    state.shadow.prepend(style);
     state.shadow.querySelector(".reader-content").appendChild(article.content);
     state.shadow.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", handleAction);
@@ -1441,315 +1422,6 @@ td, th {
     } else if (event.key.toLowerCase() === "t") {
       cycleTheme();
     }
-  }
-
-  function getShadowStyles() {
-    return `
-      :host {
-        all: initial;
-        box-sizing: border-box;
-        color-scheme: light dark;
-        display: block;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-        position: fixed;
-        inset: 0;
-        z-index: 2147483647;
-      }
-
-      *, *::before, *::after {
-        box-sizing: border-box;
-      }
-
-      .reader-shell {
-        --bg-color: #090b0f;
-        --font-color: #c9d1d9;
-        --link-color: #58a6ff;
-        --main-color: #161b22;
-        --muted-color: #8b949e;
-        --border-color: rgba(139, 148, 158, 0.22);
-        --button-bg: rgba(240, 246, 252, 0.07);
-        --button-bg-hover: rgba(240, 246, 252, 0.13);
-        background: var(--bg-color);
-        color: var(--font-color);
-        display: grid;
-        grid-template-columns: 58px 1fr;
-        height: 100vh;
-        width: 100vw;
-      }
-
-      .reader-shell[data-theme="light"] {
-        --bg-color: #f4f6f8;
-        --font-color: #1f2933;
-        --link-color: #0b65c2;
-        --main-color: #ffffff;
-        --muted-color: #64748b;
-        --border-color: rgba(15, 23, 42, 0.12);
-        --button-bg: rgba(15, 23, 42, 0.06);
-        --button-bg-hover: rgba(15, 23, 42, 0.12);
-      }
-
-      .reader-shell[data-theme="sepia"] {
-        --bg-color: #f1eadf;
-        --font-color: #2e2822;
-        --link-color: #8b3f16;
-        --main-color: #fbf7ef;
-        --muted-color: #77695d;
-        --border-color: rgba(77, 62, 48, 0.16);
-        --button-bg: rgba(77, 62, 48, 0.08);
-        --button-bg-hover: rgba(77, 62, 48, 0.14);
-      }
-
-      .reader-toolbar {
-        align-items: center;
-        background: var(--main-color);
-        border-right: 1px solid var(--border-color);
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        padding: 14px 9px;
-      }
-
-      .reader-toolbar button {
-        appearance: none;
-        background: var(--button-bg);
-        border: 1px solid var(--border-color);
-        border-radius: 6px;
-        color: var(--font-color);
-        cursor: pointer;
-        font: 700 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-        height: 38px;
-        margin: 0;
-        padding: 0;
-        width: 38px;
-      }
-
-      .reader-toolbar button:hover,
-      .reader-toolbar button:focus-visible {
-        background: var(--button-bg-hover);
-        outline: 2px solid transparent;
-      }
-
-      .reader-toolbar [data-action="download-epub"] {
-        font-size: 10px;
-      }
-
-      .reader-scroll {
-        background: var(--bg-color);
-        height: 100vh;
-        overflow: auto;
-        padding: clamp(28px, 5vw, 68px) clamp(18px, 6vw, 88px);
-        scroll-behavior: smooth;
-      }
-
-      .reader-scroll:focus {
-        outline: none;
-      }
-
-      .reader-article {
-        background: var(--main-color);
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        color: var(--font-color);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-        font-size: var(--reader-font-size, 20px);
-        line-height: var(--reader-line-height, 1.65);
-        margin: 0 auto;
-        max-width: min(var(--reader-width, 760px), 100%);
-        min-height: calc(100vh - clamp(56px, 10vw, 136px));
-        padding: clamp(28px, 5vw, 62px);
-      }
-
-      .reader-article--serif {
-        font-family: Charter, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-      }
-
-      .reader-header {
-        border-bottom: 1px solid var(--border-color);
-        margin-bottom: 1.65em;
-        padding-bottom: 1.4em;
-      }
-
-      .reader-header h1 {
-        color: var(--font-color);
-        font-size: clamp(2rem, 4.6vw, 3.6rem);
-        font-weight: 760;
-        letter-spacing: 0;
-        line-height: 1.08;
-        margin: 0;
-      }
-
-      .reader-meta {
-        color: var(--muted-color);
-        display: flex;
-        flex-wrap: wrap;
-        font-size: 0.76em;
-        gap: 0.55em;
-        line-height: 1.4;
-        margin-bottom: 1em;
-      }
-
-      .reader-meta span::before {
-        content: "/";
-        opacity: 0.55;
-      }
-
-      .reader-content {
-        overflow-wrap: anywhere;
-      }
-
-      .reader-content > *:first-child {
-        margin-top: 0;
-      }
-
-      .reader-content p,
-      .reader-content ul,
-      .reader-content ol,
-      .reader-content blockquote,
-      .reader-content pre,
-      .reader-content table,
-      .reader-content figure {
-        margin: 0 0 1.15em;
-      }
-
-      .reader-content h1,
-      .reader-content h2,
-      .reader-content h3,
-      .reader-content h4,
-      .reader-content h5,
-      .reader-content h6 {
-        color: var(--font-color);
-        font-weight: 760;
-        letter-spacing: 0;
-        line-height: 1.18;
-        margin: 1.8em 0 0.6em;
-      }
-
-      .reader-content h1 { font-size: 1.9em; }
-      .reader-content h2 { font-size: 1.55em; }
-      .reader-content h3 { font-size: 1.25em; }
-      .reader-content h4,
-      .reader-content h5,
-      .reader-content h6 { font-size: 1.05em; }
-
-      .reader-content a {
-        color: var(--link-color);
-        text-decoration: underline;
-        text-decoration-thickness: 0.08em;
-        text-underline-offset: 0.18em;
-      }
-
-      .reader-content a:not([href]) {
-        color: inherit;
-        text-decoration: none;
-      }
-
-      .reader-content ul,
-      .reader-content ol {
-        padding-left: 1.35em;
-      }
-
-      .reader-content li {
-        margin: 0.35em 0;
-      }
-
-      .reader-content blockquote {
-        border-left: 4px solid var(--link-color);
-        color: var(--font-color);
-        margin-left: 0;
-        padding-left: 1em;
-      }
-
-      .reader-content img,
-      .reader-content picture,
-      .reader-content video {
-        display: block;
-        height: auto;
-        margin: 1.2em auto;
-        max-width: 100%;
-      }
-
-      .reader-content figure {
-        margin-left: 0;
-        margin-right: 0;
-      }
-
-      .reader-content figcaption {
-        color: var(--muted-color);
-        font-size: 0.82em;
-        line-height: 1.45;
-        margin-top: -0.55em;
-        text-align: center;
-      }
-
-      .reader-content pre,
-      .reader-content code {
-        background: rgba(128, 128, 128, 0.13);
-        border-radius: 6px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      }
-
-      .reader-content code {
-        font-size: 0.88em;
-        padding: 0.12em 0.25em;
-      }
-
-      .reader-content pre {
-        overflow-x: auto;
-        padding: 1em;
-      }
-
-      .reader-content pre code {
-        background: transparent;
-        padding: 0;
-      }
-
-      .reader-content table {
-        border-collapse: collapse;
-        display: block;
-        font-size: 0.9em;
-        overflow-x: auto;
-        width: 100%;
-      }
-
-      .reader-content th,
-      .reader-content td {
-        border: 1px solid var(--border-color);
-        padding: 0.5em 0.65em;
-        text-align: left;
-        vertical-align: top;
-      }
-
-      @media (max-width: 720px) {
-        .reader-shell {
-          grid-template-columns: 1fr;
-          grid-template-rows: 52px 1fr;
-        }
-
-        .reader-toolbar {
-          border-bottom: 1px solid var(--border-color);
-          border-right: 0;
-          flex-direction: row;
-          justify-content: center;
-          padding: 7px 8px;
-        }
-
-        .reader-toolbar button {
-          height: 36px;
-          width: 40px;
-        }
-
-        .reader-scroll {
-          height: calc(100vh - 52px);
-          padding: 14px;
-        }
-
-        .reader-article {
-          border-radius: 6px;
-          min-height: calc(100vh - 80px);
-          padding: 24px 18px;
-        }
-      }
-    `;
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

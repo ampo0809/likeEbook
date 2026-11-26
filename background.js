@@ -6,6 +6,34 @@ function isMissingReceiver(error) {
   );
 }
 
+async function readStylesheet(filename) {
+  const response = await fetch(chrome.runtime.getURL(filename));
+  if (!response.ok) {
+    throw new Error(`Could not load ${filename} (${response.status})`);
+  }
+  return response.text();
+}
+
+async function injectReader(tabId) {
+  const target = { tabId };
+  const [readerCss, epubCss] = await Promise.all([
+    readStylesheet("reader-view.css"),
+    readStylesheet("epub.css")
+  ]);
+
+  await chrome.scripting.insertCSS({ target, files: ["reader.css"] });
+  await chrome.scripting.executeScript({
+    target,
+    args: [readerCss, epubCss],
+    func: (readerCss, epubCss) => {
+      if (!window.__cleanArticleReader) {
+        window.__cleanArticleReaderStyles = { readerCss, epubCss };
+      }
+    }
+  });
+  await chrome.scripting.executeScript({ target, files: ["contentScript.js"] });
+}
+
 chrome.action.onClicked.addListener((tab) => {
   if (!tab.id || !tab.url || !/^(https?|file):/.test(tab.url)) {
     return;
@@ -17,17 +45,7 @@ chrome.action.onClicked.addListener((tab) => {
       return;
     }
 
-    chrome.scripting
-      .insertCSS({
-        target: { tabId: tab.id },
-        files: ["reader.css"]
-      })
-      .then(() =>
-        chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ["contentScript.js"]
-        })
-      )
+    injectReader(tab.id)
       .then(() => chrome.tabs.sendMessage(tab.id, TOGGLE_MESSAGE))
       .catch(() => {
         // Chrome blocks injection on internal pages and some privileged URLs.
