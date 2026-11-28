@@ -1,6 +1,7 @@
 (() => {
   const API_KEY = "__cleanArticleReader";
   const MESSAGE_TYPE = "clean-reader:toggle";
+  const EPUB_IMAGE_MESSAGE = "clean-reader:fetch-epub-image";
   const SETTINGS_KEY = "cleanArticleReaderSettings";
   const PAGE_ACTIVE_ATTRIBUTE = "data-clean-article-reader-active";
   const ROOT_ATTRIBUTE = "data-clean-reader";
@@ -460,15 +461,35 @@
     }
   }
 
+  function parseSrcset(value) {
+    const candidates = [];
+    let remaining = (value || "").replace(/^[\s,]+/, "");
+
+    while (remaining) {
+      // A URL can contain commas, including the separator inside a data URL.
+      const [url] = remaining.match(/^\S+/);
+      remaining = remaining.slice(url.length);
+
+      if (url.endsWith(",")) {
+        candidates.push([url.replace(/,+$/, ""), ""]);
+      } else {
+        const comma = remaining.indexOf(",");
+        const end = comma === -1 ? remaining.length : comma;
+        candidates.push([url, remaining.slice(0, end).trim()]);
+        remaining = remaining.slice(end);
+      }
+
+      remaining = remaining.replace(/^[\s,]+/, "");
+    }
+
+    return candidates;
+  }
+
   function absolutizeSrcset(value) {
-    return (value || "")
-      .split(",")
-      .map((part) => {
-        const pieces = part.trim().split(/\s+/);
-        const url = absolutizeUrl(pieces.shift() || "");
-        return url ? [url, ...pieces].join(" ") : "";
-      })
-      .filter(Boolean)
+    return parseSrcset(value)
+      .map(([url, descriptor]) => [absolutizeUrl(url), descriptor])
+      .filter(([url]) => url)
+      .map(([url, descriptor]) => descriptor ? `${url} ${descriptor}` : url)
       .join(", ");
   }
 
@@ -777,6 +798,121 @@
     return clone;
   }
 
+  async function fetchEpubImageBlob(source) {
+    const url = new URL(source, document.baseURI);
+    const remote = ["http:", "https:"].includes(url.protocol);
+    const local = ["data:", "blob:"].includes(url.protocol) ||
+      (url.protocol === "file:" && location.protocol === "file:");
+
+    if (local || (remote && url.origin === location.origin)) {
+      const response = await fetch(url, { signal: AbortSignal.timeout(12000) }).catch(() => null);
+      if (response) {
+        return response.ok ? response.blob() : null;
+      }
+    }
+
+    if (!remote) {
+      return null;
+    }
+
+    const image = await chrome.runtime.sendMessage({ type: EPUB_IMAGE_MESSAGE, url: url.href });
+    if (!image) {
+      return null;
+    }
+
+    const binary = atob(image.base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new Blob([bytes], { type: image.type });
+  }
+
+  async function loadEpubImage(source) {
+    const blob = await fetchEpubImageBlob(source);
+    if (!blob?.size) {
+      return null;
+    }
+
+    const signature = Array.from(new Uint8Array(await blob.slice(0, 8).arrayBuffer()))
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (signature.startsWith("ffd8ff")) {
+      return { blob, extension: "jpg", type: "image/jpeg" };
+    }
+    if (signature === "89504e470d0a1a0a") {
+      return { blob, extension: "png", type: "image/png" };
+    }
+    if (signature.startsWith("474946383761") || signature.startsWith("474946383961")) {
+      return { blob, extension: "gif", type: "image/gif" };
+    }
+
+    // Convert other browser-supported formats to PNG for ebook reader compatibility.
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      canvas.getContext("2d").drawImage(image, 0, 0);
+      const png = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      return png ? { blob: png, extension: "png", type: "image/png" } : null;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function embedEpubImages(contentRoot, clone) {
+    const sources = Array.from(contentRoot.querySelectorAll("img"), (image) => {
+      const alternatives = parseSrcset(image.getAttribute("srcset")).map(([url]) => url);
+      return new Set([image.currentSrc, image.getAttribute("src"), ...alternatives].filter(Boolean));
+    });
+    const images = Array.from(clone.querySelectorAll("img"));
+    const requests = new Map();
+    const assets = new Map();
+
+    async function findImage(index) {
+      for (const source of sources[index]) {
+        if (!requests.has(source)) {
+          requests.set(source, loadEpubImage(source).catch(() => null));
+        }
+        const image = await requests.get(source);
+        if (image) {
+          return image;
+        }
+      }
+      return null;
+    }
+
+    const loaded = [];
+    for (let index = 0; index < sources.length; index += 6) {
+      const batch = sources.slice(index, index + 6);
+      loaded.push(...await Promise.all(batch.map((_, offset) => findImage(index + offset))));
+    }
+
+    for (const [index, image] of images.entries()) {
+      const resource = loaded[index];
+      if (!resource) {
+        image.replaceWith(image.alt);
+        continue;
+      }
+
+      if (!assets.has(resource)) {
+        const id = `image-${assets.size + 1}`;
+        const path = `images/${id}.${resource.extension}`;
+        const data = new Uint8Array(await resource.blob.arrayBuffer());
+        assets.set(resource, { id, path, data, type: resource.type });
+      }
+
+      image.removeAttribute("srcset");
+      image.setAttribute("src", assets.get(resource).path);
+    }
+
+    return Array.from(assets.values());
+  }
+
   function serializeXhtmlNode(node) {
     if (node.nodeType === Node.TEXT_NODE) {
       return escapeXml(node.textContent || "");
@@ -1026,8 +1162,9 @@
     return concatBytes(chunks, offset);
   }
 
-  function createEpub(article, contentRoot) {
+  async function createEpub(article, contentRoot) {
     const preparedContent = prepareEpubContent(contentRoot);
+    const images = await embedEpubImages(contentRoot, preparedContent);
     const title = article.title || document.title || "Article";
     const creator = article.byline || article.site || "";
     const language = (document.documentElement.lang || "en").split("-")[0] || "en";
@@ -1041,6 +1178,9 @@
     const toc = buildToc(preparedContent);
     const creatorNode = creator ? `<dc:creator>${escapeXml(creator)}</dc:creator>` : "";
     const dateNode = article.published ? `<dc:date>${escapeXml(article.published)}</dc:date>` : "";
+    const imageItems = images.map(({ id, path, type }) =>
+      `    <item id="${id}" href="${path}" media-type="${type}" />\n`
+    ).join("");
 
     const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -1064,7 +1204,7 @@
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav" />
     <item id="content" href="content.xhtml" media-type="application/xhtml+xml" />
     <item id="style" href="style.css" media-type="text/css" />
-  </manifest>
+${imageItems}  </manifest>
   <spine>
     <itemref idref="content" />
   </spine>
@@ -1111,7 +1251,8 @@
       { name: "OEBPS/package.opf", data: packageOpf },
       { name: "OEBPS/nav.xhtml", data: navXhtml },
       { name: "OEBPS/content.xhtml", data: contentXhtml },
-      { name: "OEBPS/style.css", data: epubCss }
+      { name: "OEBPS/style.css", data: epubCss },
+      ...images.map(({ path, data }) => ({ name: `OEBPS/${path}`, data }))
     ]);
 
     return {
@@ -1133,8 +1274,8 @@
     return createEpub(state.currentArticle, contentRoot);
   }
 
-  function downloadEpub(button) {
-    const { blob, filename } = buildCurrentEpub();
+  async function downloadEpub() {
+    const { blob, filename } = await buildCurrentEpub();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
@@ -1147,15 +1288,25 @@
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 30000);
 
-    if (button) {
-      const previous = button.textContent;
+    return { filename, size: blob.size, type: blob.type };
+  }
+
+  async function downloadFromToolbar(button) {
+    const previous = button.textContent;
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+      await downloadEpub();
       button.textContent = "OK";
+    } catch (error) {
+      console.error("EPUB export failed", error);
+      button.textContent = "ERR";
+    } finally {
       window.setTimeout(() => {
         button.textContent = previous;
+        button.disabled = false;
       }, 900);
     }
-
-    return { filename, size: blob.size, type: blob.type };
   }
 
   function scrollReaderToHash(hash, behavior = "smooth") {
@@ -1397,7 +1548,7 @@
     } else if (action === "typeface") {
       toggleTypeface();
     } else if (action === "download-epub") {
-      downloadEpub(event.currentTarget);
+      downloadFromToolbar(event.currentTarget);
     }
   }
 
