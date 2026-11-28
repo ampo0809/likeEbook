@@ -66,7 +66,15 @@
   const POSITIVE_RE =
     /article|body|content|entry|hentry|main|page|post|rich-text|story|text/i;
   const NEGATIVE_RE =
-    /ad-|ads|advert|banner|breadcrumb|browser-warning|comment|community|consent|cookie|dialog|feedback|form|ie11-notification|latest-news|masthead|menu|modal|nav|newsletter|outbrain|overlay|pager|pagination|popup|promo|recaptcha|recommend|related|share|shopping|sidebar|sign-post|social|sponsor|subscribe|toolbar|unsupported-browser|utility|widget/i;
+    /ad-|ads|advert|banner|breadcrumb|browser-warning|community|consent|cookie|dialog|feedback|form|ie11-notification|latest-news|masthead|menu|modal|nav|newsletter|outbrain|overlay|pager|pagination|popup|promo|recaptcha|recommend|related|share|shopping|sidebar|sign-post|social|sponsor|subscribe|toolbar|unsupported-browser|utility|widget/i;
+  const COMMENT_SCHEMA_SELECTOR =
+    '[itemprop~="comment"], [itemtype~="https://schema.org/Comment"], [itemtype~="http://schema.org/Comment"]';
+  const COMMENT_CONTAINER_SELECTOR =
+    'article, aside, div, li, ol, section, ul, [role="feed"], [role="list"], [role="region"]';
+  const COMMENT_MARKER_RE =
+    /^(?:(?:(?:article|blog|entry|page|post|reader|story|user|wp-block)-)?comments?(?:-(?:area|block|body|box|container|content|feed|form|item|list|module|panel|replies|reply|root|section|thread|widget|wrap|wrapper|\d+))*|discussion-thread|disqus-thread|replies-(?:list|thread)|respond)$/;
+  const COMMENT_LABEL_RE =
+    /^(?:(?:reader |user )?(?:\d[\d,.]* )?comments?(?: section| \(\d[\d,.]*\))?|(?:leave|post) a (?:comment|reply)|join the (?:conversation|discussion))$/i;
   const JUNK_HEADING_RE =
     /^(related|recommended|more from|more on|read next|you might also|latest|popular|share|was this page helpful|feedback|subscribe|newsletter)\b/i;
   const PARAGRAPH_DIV_SELECTOR =
@@ -203,6 +211,41 @@
     return /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:[;\s]|$)/i.test(style);
   }
 
+  function pruneCommentSections(root) {
+    root.querySelectorAll(COMMENT_SCHEMA_SELECTOR).forEach((element) => element.remove());
+
+    root.querySelectorAll(COMMENT_CONTAINER_SELECTOR).forEach((element) => {
+      if (!root.contains(element)) {
+        return;
+      }
+
+      const markers = [
+        element.id,
+        ...element.classList,
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-component")
+      ];
+      const hasCommentMarker = markers.some((marker) => marker && COMMENT_MARKER_RE.test(
+        marker.replace(/([a-z\d])([A-Z])/g, "$1-$2").replace(/[-_]+/g, "-").toLowerCase()
+      ));
+      if (hasCommentMarker || COMMENT_LABEL_RE.test(normalizeText(element.getAttribute("aria-label")))) {
+        element.remove();
+        return;
+      }
+
+      const labelledBy = normalizeText(element.getAttribute("aria-labelledby"));
+      if (labelledBy) {
+        const label = labelledBy.split(" ").map((id) => {
+          const target = root.querySelector(`#${CSS.escape(id)}`);
+          return target ? target.textContent : "";
+        }).join(" ");
+        if (COMMENT_LABEL_RE.test(normalizeText(label))) {
+          element.remove();
+        }
+      }
+    });
+  }
+
   function pruneUnwanted(root) {
     root.querySelectorAll(BLOCK_TAGS.join(",")).forEach((element) => element.remove());
     root
@@ -244,6 +287,15 @@
       current = current.parentElement;
     }
     return current;
+  }
+
+  function normalizeEmojiImages(root) {
+    root.querySelectorAll("img.emoji[alt], img.wp-smiley[alt], img.twemoji[alt]").forEach((image) => {
+      const alt = normalizeText(image.getAttribute("alt"));
+      if (/\p{Extended_Pictographic}|\p{Emoji_Presentation}|[#*0-9]\uFE0F?\u20E3/u.test(alt)) {
+        image.replaceWith(alt);
+      }
+    });
   }
 
   function normalizeDivParagraphs(root) {
@@ -628,7 +680,9 @@
 
   function extractArticle() {
     const bodyClone = document.body.cloneNode(true);
+    pruneCommentSections(bodyClone);
     pruneUnwanted(bodyClone);
+    normalizeEmojiImages(bodyClone);
     normalizeDivParagraphs(bodyClone);
     const candidate = pickMainCandidate(bodyClone);
     const title = getArticleTitle(candidate);
